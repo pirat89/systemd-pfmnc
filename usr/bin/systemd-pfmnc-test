@@ -80,11 +80,11 @@ ROOTDIR=$(echo $ROOTDIR | sed "s/\/*$//")
 
 #read basic directories
 BDIR="$ROOTDIR/usr/bin"
-WORK_DIR="$ROOTDIR/var/log/sysd-test"
+WORK_DIR="$ROOTDIR/var/log/sd-test"
 JOURNAL_DIR="$ROOTDIR/var/log/journal"
 TEST_DIR="$ROOTDIR/usr/lib/systemd/system"
 DEF_PATH="$ROOTDIR/etc/systemd/system/default.target"
-TEST_SERVICE_PATH="$ROOTDIR/etc/systemd/system/default.target.wants/sysd-performance-testing.service"
+TEST_SERVICE_PATH="$ROOTDIR/etc/systemd/system/default.target.wants/sd-performance-testing.service"
 END_TEST=$(ls $TEST_DIR | grep -E "test_[0-9]+\.target$" | wc -l)
 DATE=$(date +%Y_%m_%d)
 SYSD_VERSION=$($BDIR/systemctl --version | head -1 | cut -d " " -f 2)
@@ -115,6 +115,8 @@ if [[ $FLAG_NEW == true ]]; then
   mkdir $WORK_DIR/$LAST
   ln -s $LAST $WORK_DIR/last
 
+  rm -f ${WORK_DIR}/testing_completed
+
   #init next reboot
   echo $REBOOT_OS > ${WORK_DIR}/reboot_OS_label
   
@@ -130,9 +132,8 @@ if [[ $FLAG_NEW == true ]]; then
   cat ${WORK_DIR}/my_fstab | sed -r "s/\s*#.*$//g" | sed -r "s/[0-9]+$/0/g" > $ROOTDIR/etc/fstab
 
   if [[ ! -e $TEST_SERVICE_PATH ]]; then
-    little_ugly_hack=$(echo $BDIR | sed "s/^$ROOTDIR//")
     echo -e "[Unit]\nDescription=Performance testing of systemd\nRequires=default.target\nAfter=default.target" \
-            "\n\n[Service]\nType=idle\nExecStart=${little_ugly_hack}/systemd-pfmnc-test.sh\n\n" \
+            "\n\n[Service]\nType=idle\nExecStart=${BDIR#$ROOTDIR}/systemd-pfmnc-test\n\n" \
             "[Install]\nWanted=default.target\n" \
             > $TEST_SERVICE_PATH
   fi
@@ -204,6 +205,8 @@ else
   for i in $(cat ${WORK_DIR}/masked_services); do systemctl unmask $i; done
   rm ${WORK_DIR}/masked_services
   rm -f $TEST_SERVICE_PATH
+
+  touch ${WORK_DIR}/testing_completed
 
   
   # after remove is problem with SELinux and systemd-analyze for this boot

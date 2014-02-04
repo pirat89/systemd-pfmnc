@@ -5,7 +5,7 @@ import re, argparse, sys
 from os import listdir, path, mkdir, access, stat, W_OK, R_OK
 from subprocess import call
 
-BASIC_DIR="/var/log/sysd-test"
+BASIC_DIR="/var/log/sd-test"
 count_tests=2;
 
 def getparams():
@@ -113,7 +113,7 @@ def create_testlist(path_dir):
     return testlist
 
 def calc_harmony_average(sumdict):
-    """ Calculate harmonic average (mean) for tests of sysd version.
+    """ Calculate harmonic average (mean) for tests of sd version.
         It's ugly, but it's possible division by zero. 
     """
     
@@ -160,7 +160,7 @@ def calc_harmony_average(sumdict):
 def create_summary_dict(basic_dir,params):
     """ Create and return summary dict. Summary dict (sumdict) has ugly 
         structure:
-        { sysd_version : {series : [type_of_test { part_times }]}}
+        { sd_version : {series : [type_of_test { part_times }]}}
         """
     if(basic_dir[-1] != '/'):
         basic_dir += '/'
@@ -250,7 +250,7 @@ def create_graph_all_tests(data_dir,output_file,y_col,dimensions="800,600"):
 
 def save_summary(sumdict,params):
     """ Create summary files for each type of test (0,1,2,..)"""
-    head = "sysd[_series]  kernel  initrd  userspace   total [sec]\n"
+    head = "sd[_series]  kernel  initrd  userspace   total [sec]\n"
     line_format = "{:<14s}  {:7.3f} {:8.3f} {:11.3f}  {:8.3f}"
     df_list=[]
 
@@ -259,16 +259,16 @@ def save_summary(sumdict,params):
         handle.write(head)
         df_list.append(handle)
 
-    for sysdv in sorted(sumdict.keys(), reverse=True):
-        sysd_dict = sumdict[sysdv]
-        for series in sorted(sysd_dict.keys(), reverse=True):
-            test_list = sysd_dict[series]
+    for sdv in sorted(sumdict.keys(), reverse=True):
+        sd_dict = sumdict[sdv]
+        for series in sorted(sd_dict.keys(), reverse=True):
+            test_list = sd_dict[series]
             i = 0
-            sysd_str = str(sysdv)
+            sd_str = str(sdv)
             if(params.ignore_version == True):
-              sysd_str += "_"+str(series)
+              sd_str += "_"+str(series)
             for test in test_list:
-                df_list[i].write(line_format.format(sysd_str,
+                df_list[i].write(line_format.format(sd_str,
                     test["kernel"],test["initrd"],test["userspace"],
                     test["kernel"]+test["initrd"]+test["userspace"])+"\n")
                 i +=1

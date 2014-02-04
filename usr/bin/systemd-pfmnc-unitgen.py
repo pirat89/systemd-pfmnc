@@ -4,7 +4,7 @@ import sys
 from os import path, access,stat, W_OK, R_OK
 
 def print_usage():
-  print("""Descripttion:
+    print("""Descripttion:
        Script generate N units (services) in format test_[0-9]+.service
        with dependencies (weight-balanced binary tree).
         """)
