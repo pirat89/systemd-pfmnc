@@ -4,6 +4,7 @@
 import re, argparse, sys
 from os import listdir, path, mkdir, access, stat, W_OK, R_OK
 from subprocess import call
+from pprint import pprint
 
 BASIC_DIR="/var/log/sd-test"
 count_tests=2;
@@ -11,7 +12,7 @@ count_tests=2;
 def getparams():
     """ Get and parse commandline parameters. """
     parser = argparse.ArgumentParser(
-        prog="testresume",
+        prog="systemd-pfmnc-graph.py",
         description="Script create summary files from logs of tests of systestemd and graphs with gnuplot.")
     parser.add_argument("-o","--output-dir", nargs=1,metavar="DIR",
         dest="output_dir", default=BASIC_DIR,
@@ -35,7 +36,7 @@ def getparams():
         action="store_true", default=False,
         help="calculate harmonic average for same tests of same versions of systemd")
     #parser.add_argument("", nargs="?",metavar="DIR", dest="", help="")
-    
+
     return parser.parse_args()
 
 def get_string(tmp_var):
@@ -97,17 +98,23 @@ def create_testlist(path_dir):
     global count_tests
 
     for dstfile in timesortedls(path_dir):
+        if(re.match("[0-9]+_time",dstfile) == None): # change for test types
+            continue
         test_type,log_type = dstfile.split("_")
-        if(log_type != "time"):
+        test_type = int(test_type)
+        if(log_type != "time"): # redundant
             continue
 
         # get test type count
-        if(int(test_type) > count_tests):
-            count_tests = int(test_type)
+        if(test_type > count_tests):
+            count_tests = test_type
+
+        # if some file missing (test type from 0 to N)
+        while(test_type > len(testlist)):
+            testlist.append(None)
 
         handle = open(path_dir+'/'+dstfile, "r")
         o = parsetime(handle.read().strip())
-        print(o,dstfile)
         testlist.append(o)
         handle.close()
     return testlist
@@ -116,11 +123,11 @@ def calc_harmony_average(sumdict):
     """ Calculate harmonic average (mean) for tests of sd version.
         It's ugly, but it's possible division by zero. 
     """
-    
+
     for version in sumdict.keys():
         tmpList = sumdict[version][0]
         num = len(sumdict[version])
-        
+
         i=0
         while(i < len(tmpList)):
             if(tmpList[i]["kernel"] > 0): 
@@ -157,10 +164,30 @@ def calc_harmony_average(sumdict):
         sumdict[version] = { 0 : tmpList }
     return sumdict
 
+def complete_summary_dict(sumdict):
+    """ Add missing tests into the summary dict with default zero time values
+        and replace "None" tests too. """
+    default_dict = {"kernel" : 0, "initrd" : 0, "userspace" : 0}
+    for version in sumdict.keys():
+        for series in sumdict[version].keys():
+            testlist = sumdict[version][series]
+            i = 0
+            while (i < len(testlist)):
+                if (testlist[i] == None):
+                    testlist[i] = default_dict
+                i += 1
+            i = count_tests - len(testlist)
+            while (i > 0):
+                testlist.append(default_dict)
+                i -= 1
+            sumdict[version][series] = testlist
+    return sumdict
+
 def create_summary_dict(basic_dir,params):
     """ Create and return summary dict. Summary dict (sumdict) has ugly 
         structure:
         { sd_version : {series : [type_of_test { part_times }]}}
+           commit ...
         """
     if(basic_dir[-1] != '/'):
         basic_dir += '/'
@@ -168,15 +195,15 @@ def create_summary_dict(basic_dir,params):
     sumdict={}
     for test_dir in timesortedls(basic_dir, True):
         if(path.isdir(basic_dir+test_dir) == False or
-            re.match("[0-9]+_[0-9]+",test_dir) == None):
+            re.match(".+_[0-9]+",test_dir) == None): ### here TODOOOO commits...
             continue
         version,numero = test_dir.split("_")
-        if(sumdict.has_key(int(version)) == False):
-            sumdict[int(version)] = { int(numero): create_testlist(basic_dir+test_dir) }
+        if(sumdict.has_key(version) == False):
+            sumdict[version] = { int(numero): create_testlist(basic_dir+test_dir) }
         elif(params.ignore_version == True):
-            sumdict[int(version)] [int(numero)] = create_testlist(basic_dir+test_dir)
+            sumdict[version] [int(numero)] = create_testlist(basic_dir+test_dir)
         elif(params.average_enabled == True):
-            sumdict[int(version)] [int(numero)] = create_testlist(basic_dir+test_dir)
+            sumdict[version] [int(numero)] = create_testlist(basic_dir+test_dir)
             continue
         else:
             continue
@@ -185,10 +212,11 @@ def create_summary_dict(basic_dir,params):
         if(counter == 0):
             break;
 
+    sumdict = complete_summary_dict(sumdict)
     if(params.average_enabled == True):
         sumdict = calc_harmony_average(sumdict)
 
-        
+
     return sumdict
 
 
@@ -232,20 +260,28 @@ def create_graph_all_tests(data_dir,output_file,y_col,dimensions="800,600"):
             re.match("^test_[0-9]\.summary",filename) == None):
             continue
         filelist.append(filepath)
-    
+
     gpcomlist = [
         "set style data linespoint",
         "set ylabel \"time [s]\"",
         "set xlabel \"systemd version\"",
+        "set xtic rotate by 45 right",
         "set style fill solid",
         "set xrange [] reverse",
         "set offset 0.5,0.5,0,0",
         "set grid ytics",
         "set terminal svg size "+ dimensions +" dynamic background rgb \"#ffffff\"",
         "set output \""+ output_file +"\"",
-        "plot \""+ filelist[0] +"\" u "+ y_col +":xticlabels(1) title \"test_0\", \""+ filelist[1] +"\" u "+ y_col +" title \"test_1\", \""+ filelist[2] +"\" u "+ y_col +" title \"test_2\", \""+ filelist[3] +"\" u "+ y_col +" title \"test_3\"",
-        "set output"
         ]
+
+    plot_str="plot \""+ filelist[0] +"\" u "+ y_col +":xticlabels(1) title \"test_0\""
+    i = 1
+    while(i < len(filelist)):
+        plot_str +=", \""+ filelist[i] +"\" u "+ y_col +" title \"test_"+str(i)+"\""
+        i += 1
+
+    gpcomlist.append(plot_str)
+    gpcomlist.append("set output") # flush hack
     call(["gnuplot","-e",";".join(gpcomlist)])
 
 def save_summary(sumdict,params):
@@ -254,11 +290,14 @@ def save_summary(sumdict,params):
     line_format = "{:<14s}  {:7.3f} {:8.3f} {:11.3f}  {:8.3f}"
     df_list=[]
 
+    # open all resume files and print header
     for i in range(count_tests+1):
         handle = open(path.join(params.output_dir,"test_"+str(i)+".summary"), "w")
         handle.write(head)
         df_list.append(handle)
 
+    # body
+    # go through whole structure and print
     for sdv in sorted(sumdict.keys(), reverse=True):
         sd_dict = sumdict[sdv]
         for series in sorted(sd_dict.keys(), reverse=True):
@@ -266,13 +305,13 @@ def save_summary(sumdict,params):
             i = 0
             sd_str = str(sdv)
             if(params.ignore_version == True):
-              sd_str += "_"+str(series)
+                sd_str += "_"+str(series)
             for test in test_list:
                 df_list[i].write(line_format.format(sd_str,
                     test["kernel"],test["initrd"],test["userspace"],
                     test["kernel"]+test["initrd"]+test["userspace"])+"\n")
                 i +=1
-    
+
     for handle in df_list:
         handle.close()
     return 0
@@ -293,8 +332,8 @@ save_summary(sumdict,params)
 
 if(params.graph_enabled == True):
     create_graph(
-        path.join(params.input_dir,"test_2.summary"),
+        path.join(params.output_dir,"test_2.summary"),
         path.join(params.output_dir,"uspace_2.svg"),
         4)
-    create_graph_all_tests(params.input_dir,path.join(params.output_dir,"uspace_all.svg"),4)
+    create_graph_all_tests(params.output_dir,path.join(params.output_dir,"uspace_all.svg"),4)
 
