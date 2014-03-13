@@ -2,18 +2,19 @@
 
 import sys
 from os import path, access,stat, W_OK, R_OK
+from pprint import pprint
 
 def print_usage():
     print("""Descripttion:
        Script generate N units (services) in format test_[0-9]+.service
-       with dependencies (weight-balanced binary tree).
-        """)
-    print("Usage:\n    systemd-pfmnc-unitgen.py O_DIR N")
+       with dependencies (weight-balanced binary tree).""")
+    print("Usage:\n    systemd-pfmnc-unitgen.py O_DIR N [OP]")
     print("       O_DIR   output directory")
     print("       N       number of units")
+    print("       [OP]    ExecStart operation")
 
 def getparams():
-    if(len(sys.argv) != 3):
+    if(len(sys.argv) < 3):
         print_usage()
         sys.exit(1)
 
@@ -21,7 +22,11 @@ def getparams():
         print_usage()
         sys.exit(1)
 
-    return sys.argv[1], int(sys.argv[2])
+    exec_op="/bin/echo \"test\""
+    if(len(sys.argv) == 4 and len(sys.argv[3]) > 0):
+        exec_op=sys.argv[3]
+
+    return sys.argv[1], int(sys.argv[2]), exec_op
 
 def check_dir(o_dir, mode):
     """ Check if o_dir exists and it is directory with read/write
@@ -83,13 +88,13 @@ def write_dependency(handle,itemList):
     handle.write("Requires="+tmp_str[:-1]+"\n")
     handle.write("After="+tmp_str[:-1]+"\n")
 
-def write_postfix(handle):
+def write_postfix(handle,exec_op):
     handle.write("\n")
     handle.write("[Service]\n")
     handle.write("Type=simple\n")
-    handle.write("ExecStart=/bin/echo \"test\"\n")
+    handle.write("ExecStart="+ exec_op +"\n")
 
-def create_units(dependenciesList, o_dir, unit_count):
+def create_units(dependenciesList, o_dir, unit_count, exec_op):
     i = 1
     itemList = None
 
@@ -102,13 +107,13 @@ def create_units(dependenciesList, o_dir, unit_count):
         if(len(itemList) > 0):
             write_dependency(handle, itemList)
 
-        write_postfix(handle)
+        write_postfix(handle, exec_op)
         handle.close()
         i += 1
 
 ################################# MAIN #######################################
 
-o_dir, unit_count = getparams();
+o_dir, unit_count, exec_op = getparams();
 
 if(check_dir(o_dir, W_OK) == False):
     sys.exit(2)
@@ -139,5 +144,5 @@ while(True):
     listList = []
     processed_nodeList = []
 
-create_units(dependenciesList, o_dir, unit_count)
+create_units(dependenciesList, o_dir, unit_count, exec_op)
 

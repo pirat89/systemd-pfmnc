@@ -3,34 +3,494 @@
 FLAG_NEW=0
 REBOOT_ENABLED=1
 STEP=-1
-ROOTDIR=""
-REBOOT_OS=""
+ROOTDIR=
+REBOOT_OS=
+CONF_FILE=
+DRACUT_FLAG=0
+DRACUT_FS_LABEL=
 
-if [[ $EUID -ne 0  ]]; then
-  echo "This script must be run as root" 1>&2
- # exit 2
-fi
-
+#############################################################################
+#                                 FUNCTIONS                                 #
+#############################################################################
 print_usage() {
-  echo "systemd-pfmnc-test.sh [ROOTDIR DIR] [next-reboot OS] [no-reboot] [new-test [N]]
+  echo "systemd-pfmnc-test.sh [ROOTDIR DIR] [next-reboot OS] [no-reboot]
+                              [new-test [N]] [test-conf FILE] [pre-dracut]
+                              [help-full] [help-conf] [help | h]
 
   ROOTDIR  DIR    set \$ROOTDIR to DIR
                   this parameter is usefull when you want init tests from
                   else OS 
+
   next-reboot OS  set OS for reboots during testing (grub2-reboot OS)
                   last reboot after testing is to default system
+
   no-reboot       system must be rebooted manually - has effect only before
                   testing (ie. when 'new-test' is set)
+
   new-test [N]    Start new testing [from test number N]
+
+  test-conf FILE  own configuration file for tests and output, you can use
+                  prepared skeleton from default configuration file
+                  (default skeleton: /etc/systemd/pfmnc-test/test.conf)
+                  (see more with --help-conf)
+
+  pre-dracut FILENAME
+                  create new initramfs before testing (when 'next-reboot is 
+                  set, will be rebooted one more time for creation initramfs
+                  in else OS) - backup is created as FILENAME.backup
+                  (ROOTDIR affect dest directory)
+
+  help            print this help
+  help-conf       print help for configuration of tests and output
+  help-full       print all helps
+
 "
 }
 
+print_conf_help() {
+  echo "You can configure tests and graphs by your configuration file.
+This file have to be in form<<<
+
+# main configuration for test paths..
+[MAIN] 
+option=values separated by spaces
+next_option=value
+# ... -> and next
+
+# configuration for test 0
+[TEST_0]
+...
+
+[TEST_1]
+....
+
+[OUTPUT]
+...
+
+# OUTPUT is always OUTPUT - see below
+[OUTPUT]
+...
+
+# please, use comments only in isolated line
+# I don't care (test) too much about behaviour with comments after commands,
+# however it should be OK
+>>>
+Options for MAIN (optional section):
+  GROUP_DIR         absolute path of output directory where will be created
+                    directory with results.
+                    !! PATH can't contain any whitespace !!
+                    (default: /var/log/sd-test/results)
+
+  DIRNAME           name of dir with results (only name! Not path!)
+                    suffix \"_N\" will be appended to DIRNAME automatically
+                    so you can't use \"_\" in DIRNAME.
+                    suffix is used for distinction of tests of same versions
+                    or commits
+                    where N >= 0
+                    Directory will be created in GROUP_DIR/DIRNAME
+                    !! Can't contain any whitespace and \"_\"!!
+                    ( not supported now )
+
+  MULTIPLE          It will do whole set of tests N times.
+                    (possible future feater - not supported now)
+
+  END_TEST          stop testing after test N
+
+  LAST_DEFAULT      set 1 if you want imply default boot as the last
+                    test of testing (default 0)
+
+You can set these options in TEST_N (REQUIRED section!!):
+  WANTS             creates symlinks in N_test.target.wants directory
+                    of services/targets from list
+
+  SERVICE_GEN_N     generates N services with tree dependencies
+                    and add them into *wants directory
+
+  SERVICE_GEN_OP    set operation which will be executed by generated services
+                    If you need quotes or some special chars, create new script
+                    and call it.
+                    (default operation: )
+
+For output (summary files and graphs) (optional section):
+  NO_GRAPHS         set 1 if you don't want graphs, but only summary files
+
+  COUNT             set N -> print N tests (default prints all tests)
+
+  ONE_IN            set N -> print every N test (or version/commit)
+
+  SIZES             set sizes of graphs (WIDTHxHEIGHT -> default 800x600)
+
+  IGNORE_VERSION    set 1 if you want prints tests of same versions
+                    if you use AVERAGE, this option will be ignored
+
+  AVERAGE           set 1 ->calculate harmonic average for same tests of same
+                    versions (or commits) of systemd
+                    (you must do tests multiple times, if you want create set
+                    of values for calculation)
+
+  INPUT_DIR         set input directory with results directories of tests
+                    !! Can't contain any whitespace !!
+                    (default: /var/log/sd-test/results or same as GROUP_DIR )
+
+  OUTPUT_DIR        set output directory for summary files and graphs
+                    !! Can't contain any whitespace !!
+
+  COLLECTIONS       0,1,2   -> print results from tests 0,1,2 into one graph
+                    1 2     -> print tests 1,2 each in own graphs
+                    1,2 1 3 -> combination ..
+                    Special char \"A\" - all tests into one graph
+                    e.g.: 1,3 1 A -> correct
+                    However you can't create tuple with A and other tests
+                    e.g.: 1,A,2 -> incorrect
+                    And special char \"X\" -> each test alone
+                    for tests 1 - N generates: 1 2 .. N
+                    (future feature - comming soon - personal deadline March)
+
+Output sections can be applied multiple times. If you want differrent graphs
+from results in different directories, you can add next OUTPUT section
+and set new parameters.
+
+In other sections is multiple occurrence enabled too, however settings will be
+rewritten.
+
+The order of sections doesn't matter.
+"
+}
+
+######### some useful mini-functions ######################################
+my_mkdir () {
+  if [[ ! -e $1 ]]; then
+    mkdir -p $1 || { echo "Can't create directory $1" >&2; return 1; }
+  elif [[ ! -d $1 ]]; then
+    echo "Can't create directory $1: file exists" >&2
+    return 2
+  fi
+
+  return 0
+}
+
+#################################################
+use_dracut() {
+  cp -f $ROOTDIR/boot/$DRACUT_FS_LABEL $ROOTDIR/boot/${DRACUT_FS_LABEL}.backup
+  dracut -f $ROOTDIR/boot/$DRACUT_FS_LABEL
+  if [[ $? -ne 0  ]]; then
+    cp -f $ROOTDIR/boot/${DRACUT_FS_LABEL}.backup $ROOTDIR/boot/$DRACUT_FS_LABEL
+    echo "Error: dracut failed!" >&2
+    return 1
+  fi
+
+  return 0
+}
+
+#################################################
+check_match_str() {
+  regexp=$1
+  shift
+  echo $@ | grep -iE "$regexp" > /dev/null
+  return $?
+}
+
+#################################################
 test_arg() {
  if [[ $1 == "" ]]; then
    print_usage
    exit 1
  fi
 }
+
+#################################################
+my_trim() {
+  echo $@ | sed "s/^ *//g" | sed "s/ *$//g"
+}
+
+############################## PARSER #####################################
+conf_parser() {
+  part=""
+  tmp=""
+  option=""
+  value=""%
+  _END_TEST=0
+  _test_number=""
+  _MAX_TEST=-1
+
+  rm -rf $RECIPE_DIR/*
+
+  while read line; do
+    if [[ $line == "" ]]; then continue; fi
+    tmp=$( echo $line | grep -oE "^\s*\[(MAIN|TEST_[0-9]+|OUTPUT)\]" | sed "s/[][ ]//g" )
+
+    if [[ $tmp != "" ]]; then
+      part=$tmp
+
+      #... add_output line
+      if [[ $part == "OUTPUT" ]]; then echo "#[OUTPUT]#" >> $RECIPE_DIR/$part; fi
+      continue
+    fi
+
+    if [[ $part  == "" ]]; then
+      echo $line | grep -oE "^\s*#.*" > /dev/null
+      if [[ $? -ne 0 ]]; then return 1; fi # syntax error
+      continue # that's only comment
+    fi
+
+    option=$( my_trim $( echo $line | cut -d "=" -f 1 ))
+    value=$( my_trim $( echo $line | cut -d "=" -f 2- ))
+
+    if [[ $part == "MAIN" ]]; then ############################ MAIN
+      case $option in
+        GROUP_DIR)
+          check_match_str "^/[a-z0-9_./-]+$" $value ||
+            { echo "$option contains not allowed chars or is not absolute path" >&2; return 1; }
+          echo "RESULT_DIR=$value" >> $RECIPE_DIR/$part
+          ;;
+
+        DIRNAME) # not supported now
+          #check_match_str "^[a-z0-9_.-]+$" $value ||
+          #  { echo "$option contains not allowed chars" >&2; return 1; }
+          #echo "DIRNAME=$value" >> $RECIPE_DIR/$part
+          echo "Warning: Option DIRNAME is not supported now (will be ignored)" >&2
+          ;;
+
+        MULTIPLE)
+          echo "Warning: Option MULTIPLE is not supported now (will be ignored)" >&2
+          ;;
+
+        END_TEST)
+          check_match_str "^[0-9]+$" $value ||
+            { echo "Error: $option value must be integer."; return 1; }
+            _MAX_TEST=$value    # value will be written at and of function
+          ;;
+        LAST_DEFAULT)
+          check_match_str "^[01]$" $value ||
+            { echo "Error: $option value must be 0 or 1."; return 1; }
+          echo "LAST_DEFAULT=$value" >> $RECIPE_DIR/$part
+          ;;
+        *)
+          echo "Error: Unknown option: $option" >&2
+          return 1
+          ;;
+      esac
+    elif [[ $part == "OUTPUT" ]]; then ######################## OUTPUT
+      case $option in
+        NO_GRAPH | AVERAGE | IGNORE_VERSION)
+          check_match_str "^[01]$" $value ||
+            { echo "Error: $option must contains 0 or 1" >&2; return 1; }
+          if [[ $value -eq 1 ]];then
+            tmp_opt=$( echo $option | tr '[:upper:]' '[:lower:]' | tr "_" "-" )
+            echo "$option=--$tmp_opt" >> $RECIPE_DIR/$part
+          fi
+          ;;
+
+        COUNT | ONE_IN)
+          check_match_str "^[0-9]+$" $value ||
+            { echo "Error: $option must be integer value 0 <= N"; return 1; }
+          tmp_opt=$( echo $option | tr '[:upper:]' '[:lower:]' | tr "_" "-" | sed "s/count/last/" )
+          echo "$option=--$tmp_opt $value" >> $RECIPE_DIR/$part
+          ;;
+
+        SIZES)
+          check_match_str "^[0-9]+x[0-9]+$" $value ||
+            { echo "Error: $option must be in shape WIDTHxHEIGHT" >&2; return 1; }
+          echo "SIZES=--sizes $value" >> $RECIPE_DIR/$part
+          ;;
+
+        INPUT_DIR | OUTPUT_DIR)
+          check_match_str "^/[a-z0-9_./-]+$" $value ||
+            { echo "Error: $option contains not allowed chars or is not absolute path" >&2; return 1; }
+          echo "$option=$value" >> $RECIPE_DIR/$part
+          ;;
+
+        COLLECTIONS)
+          # allow all possible variation (see help-conf)
+          check_match_str "^(((([0-9],)*[0-9])*( |$))*|((A|X)( |$)))*$" $value ||
+            { echo "Error: Invalid colections. See help-conf for correct value" >&2; return 1; }
+          # echo "COLLECTIONS=--collections \"$value\""
+          echo "Warning: $option not implemented yet. Ignore for now."
+
+          ;;
+
+        *)
+          echo "Error: Unknown option: $option" >&2
+          return 1
+          ;;
+      esac
+    else ###################################################### TEST_N
+      _test_number=$( echo $part | cut -d "_" -f 2 )
+      if [[ $_test_number -gt $_END_TEST ]]; then _END_TEST=$_test_number; fi
+
+      case $option in
+        WANTS)
+          check_match_str "^[a-z0-9.@ _-]+$" $value ||
+            { echo "Error: $option contains not allowed chars. Allowed \"a-z0-9. _-\"" >&2; return 1; }
+          echo "WANTS=$value" >> $RECIPE_DIR/$part
+          ;;
+
+        SERVICE_GEN_N)
+          check_match_str "^[0-9]+$" $value ||
+            { echo "Error: $option is not integer!" >&2; return 1; }
+          echo "SERVICE_GEN_N=$value" >> $RECIPE_DIR/$part
+          ;;
+
+        SERVICE_GEN_OP)
+          # here must be all OK - if you want use special chars here, you mast comment
+          # next 2 lines or edit regexp
+          check_match_str "^[a-z0-9_.,/\\ -]+$" $value ||
+            { echo "Error: $option contains not allowed chars. Please create own script and call it if you need more" >&2; return 1; }
+          echo "SERVICE_GEN_OP=$value" >> $RECIPE_DIR/$part
+          ;;
+        *)
+          echo "Error: Unknown option: $option" >&2
+          return 1
+        ;;
+      esac
+    fi
+
+  done < $CONF_FILE
+
+  if [[ $_MAX_TEST -gt 0 && $_MAX_TEST -le $_END_TEST ]]; then
+    _END_TEST=$_MAX_TEST
+  fi
+
+  END_TEST=$[ $_END_TEST + 1 ]
+  echo "END_TEST=$END_TEST" >> $RECIPE_DIR/MAIN
+
+  if [[ $END_TEST -le 0 ]]; then
+    echo "Error: Non-sense END_TEST or tests missing!" >&2
+    return 2;
+  fi
+
+  return 0
+}
+
+####################### load recipes (set variables) ######################
+init_default_output_values() {
+NO_GRAPHS=
+COUNT=
+ONE_IN=
+SIZES=
+IGNORE_VERSION=
+AVERAGE=
+INPUT_DIR=$RESULT_DIR
+OUTPUT_DIR=$INPUT_DIR
+COLLECTIONS=
+}
+
+#################################################
+load_main_recipe() {
+  while read line; do
+    option=$( my_trim $( echo $line | cut -d "=" -f 1 ))
+    value=$( my_trim $( echo $line | cut -d "=" -f 2- ))
+    if [[ $option == "RESULT_DIR" ]]; then
+      RESULT_DIR=${ROOTDIR}$value # value is absolute path
+      continue
+    fi
+    declare -g $( echo $line )
+  done < $RECIPE_DIR/MAIN
+  return 0
+}
+
+#################################################
+load_next_recipe() {
+  while [[ 1 ]]; do
+    STEP=$[ $STEP +1 ]
+    if [[ $STEP -ge $END_TEST ]]; then return 0; fi
+    if [[ -e $RECIPE_DIR/TEST_$STEP ]]; then break; fi
+  done
+
+  while read line; do
+    declare -g "$( echo $line )"
+  done < $RECIPE_DIR/TEST_$STEP
+  return 0
+}
+
+#################################################
+load_output_recipe() {
+  init_default_output_values
+  first_flag=1
+
+  if [[ ! -e $RECIPE_DIR/OUTPUT ]]; then
+    # create default output
+    print_output
+    return
+  fi
+  
+  while read line; do
+    if [[ $line == "#[OUTPUT]#" ]]; then
+      if [[ $first_flag -eq 1 ]]; then
+        first_flag=0
+        continue
+      else
+        # do output..
+        print_output
+        init_default_output_values
+        continue
+      fi
+    fi
+    declare -g $( echo $line )
+  done < $RECIPE_DIR/OUTPUT
+
+  # EOF - create last output
+  print_output
+  return
+}
+
+###############################################
+print_output() {
+  graph_options="$NO_GRAPHS $COUNT $ONE_IN $SIZES $IGNORE_VERSION $AVERAGE"
+  $BDIR/systemd-pfmnc-graph.py $graph_options -i $INPUT_DIR -o $OUTPUT_DIR
+  return  $?
+}
+
+###########################################################################
+create_target() {
+  if [[ ! -f $LIB_TARGET ]]; then
+    echo "[Unit]" > $LIB_TARGET
+    echo "Descriptiont=sd performance test" >> $LIB_TARGET
+    echo "Requires=basic.target" >> $LIB_TARGET
+    echo "After=basic.target" >> $LIB_TARGET
+    echo "AllowIsolate=Yes" >> $LIB_TARGET
+    echo "" >> $LIB_TARGET
+    echo "[Install]" >> $LIB_TARGET
+    echo "Alias=default.target" >> $LIB_TARGET
+  fi
+
+  if [[ ! -d $LIB_TARGET_DIR ]];then
+    mkdir $LIB_TARGET_DIR
+  else
+    rm -rf $LIB_TARGET_DIR/*
+  fi
+}
+
+#################################################
+prepare_test() {
+  create_target
+
+  cd $LIB_TARGET_DIR
+  rm -f ../test_*.service # services generated by unitgenerator
+
+  # wants symlinks
+  for item in $WANTS; do
+    ln -s ../$item $item
+  done
+
+  # unit\ generator + symlinks
+  if [[ $SERVICE_GEN_N != "" ]]; then
+    $BDIR/systemd-pfmnc-unitgen.py $LIB_TEST_DIR $SERVICE_GEN_N "$SERVICE_GEN_OP" || 
+      { cd -; return 1;}
+    service_counter=1
+    while [[ $service_counter -le $SERVICE_GEN_N ]]; do
+      ln -s ../test_${service_counter}.service test_${service_counter}.service
+      service_counter=$[ $service_counter +1 ]
+    done
+  fi
+
+  cd -
+  return 0
+}
+
+###########################################################################
+#                                MAIN                                     #
+###########################################################################
 
 #read some arguments
 while [[ $1 != "" ]]; do
@@ -50,6 +510,7 @@ while [[ $1 != "" ]]; do
      ROOTDIR=$_VAL
      shift $_USED_NEXT
      ;;
+
    --new-test | new-test)
      FLAG_NEW=true
      if [[ $_VAL =~ ^[0-9][0-9]*$ ]]; then
@@ -57,78 +518,155 @@ while [[ $1 != "" ]]; do
        shift $_USED_NEXT
      fi
      ;;
+
    --no-reboot | no-reboot)
      REBOOT_ENABLED=false
      ;;
+
    --next-reboot | next-reboot)
      test_arg $_VAL
      REBOOT_OS=$_VAL
      shift $_USED_NEXT
      ;;
-   --help | -h)
+
+   --test-conf | test-conf)
+     test_arg $_VAL
+     CONF_FILE=$_VAL
+     ;;
+
+   --pre-dracut | pre-dracut)
+     test_arg $_VAL
+     DRACUT_FLAG=1
+     DRACUT_FS_LABEL=$_VAL
+     shift $_USED_NEXT
+     ;;
+
+   --help-full | help-full)
+     print_usage
+     print_conf_help
+     exit 0
+     ;;
+
+   --help | help | -h | h)
      print_usage
      exit 0;
      ;;
+
+   --help-conf | help-conf)
+     print_conf_help
+     exit 0
+     ;;
+
    *)
      ;;
  esac
  shift
 done
 
-#erase "/" from end of *DIR
+if [[ $EUID -ne 0  ]]; then
+  echo "This script must be run as root" 1>&2
+  exit 2
+fi
+
+# erase "/" from end of *DIR
 ROOTDIR=$(echo $ROOTDIR | sed "s/\/*$//")
 
 #read basic directories
 BDIR="$ROOTDIR/usr/bin"
 WORK_DIR="$ROOTDIR/var/log/sd-test"
+RECIPE_DIR="$WORK_DIR/recipe"
+RESULT_DIR="$WORK_DIR/results"
 JOURNAL_DIR="$ROOTDIR/var/log/journal"
-TEST_DIR="$ROOTDIR/usr/lib/systemd/system"
-DEF_PATH="$ROOTDIR/etc/systemd/system/default.target"
+LIB_TEST_DIR="$ROOTDIR/usr/lib/systemd/system"
+LIB_TARGET="$LIB_TEST_DIR/test_pfmnc.target"
+LIB_TARGET_DIR="$LIB_TEST_DIR/test_pfmnc.target.wants"
+
+CONF_FILE_DEFAULT="$ROOTDIR/etc/systemd/pfmnc-test/test.conf"
+DEF_PATH="/etc/systemd/system/default.target" # exception: ROOTDIR must be added manually
 TEST_SERVICE_PATH="$ROOTDIR/etc/systemd/system/default.target.wants/sd-performance-testing.service"
-END_TEST=$(ls $TEST_DIR | grep -E "test_[0-9]+\.target$" | wc -l)
-DATE=$(date +%Y_%m_%d)
-SYSD_VERSION=$($BDIR/systemctl --version | head -1 | cut -d " " -f 2)
 LOG_ENABLED=1
 
-if [ ! -d $WORK_DIR ]; then
-  echo "Create directory ${WORK_DIR}"
-  mkdir -p $WORK_DIR
+END_TEST= #   $(ls $LIB_TEST_DIR | grep -E "test_[0-9]+\.target$" | wc -l) #old
+SD_VERSION=$($BDIR/systemctl --version | head -1 | cut -d " " -f 2)
+
+# service variables
+WANTS=
+SERVICE_GEN_N=
+SERVICE_GEN_OP=
+
+# output variables
+NO_GRAPHS=
+COUNT=
+ONE_IN=
+SIZES=
+IGNORE_VERSION=
+AVERAGE=
+INPUT_DIR=
+OUTPUT_DIR=
+COLLECTIONS=
+
+mask_list="NetworkManager-wait-online systemd-readahead-collect systemd-readahead-reaplay"
+
+if [[ $CONF_FILE == ""  ]]; then
+  CONF_FILE=$CONF_FILE_DEFAULT
 fi
+
+if [[ ! -e $CONF_FILE ]]; then
+  echo "Config file not found!" >&2
+  exit 1
+fi
+
+my_mkdir $WORK_DIR || exit $?
+my_mkdir $RECIPE_DIR || exit $?
 
 # start new tests
 if [[ $FLAG_NEW == true ]]; then
-  if [[ $END_TEST -le 0 ]]; then
-    echo "Tests not found!" >&2
-    echo "Check if exists tests in forma 'test_N.target' with" >&2
-    echo "'test_N.target.wants/' directory in $ROOTDIR/usr/lib/systemd/system/" >&2
+  if [[ ! -e $CONF_FILE ]]; then
+    echo "Config file not found!" >&2
     exit 1
   fi
+
+  conf_parser || exit $? # parse recipes from configuration file
+  load_main_recipe
+  my_mkdir $RESULT_DIR || exit $?
 
   if [[ $STEP -ge $END_TEST ]]; then
-    echo "You have only $END_TEST test. Chose lesser number for start" >&2
+    echo "Error: You have only $END_TEST tests. Choose lesser number then $END_TEST for start" >&2
     exit 1
   fi
 
-  LOG_ENABLED=0
-  LAST=${SYSD_VERSION}_$(ls $WORK_DIR | grep ${SYSD_VERSION}_ | wc -l)
-  rm -f $WORK_DIR/last
-  mkdir $WORK_DIR/$LAST
-  ln -s $LAST $WORK_DIR/last
+  if [[ $DRACUT_FLAG  ]]; then
+    if [[ ! -f /boot/$DRACUT_FS_LABEL ]]; then
+      echo "Error: initramfs '$DRACUT_FS_LABEL' doesn't exists" >&2
+      exit 1
+    fi
+    if [[ $REBOOT_OS == "" ]]; then
+      use_dracut || exit $?
+    fi
+    # else: call dracut next time (added reboot condition below)
+  fi
 
+
+  LOG_ENABLED=0
+  LAST=${SD_VERSION}_$(ls $RESULT_DIR | grep ${SD_VERSION}_ | wc -l)
   rm -f ${WORK_DIR}/testing_completed
+  rm -f $WORK_DIR/last
+  mkdir $RESULT_DIR/$LAST
+  ln -s ${RESULT_DIR#$ROOTDIR}/$LAST $WORK_DIR/last
 
   #init next reboot
   echo $REBOOT_OS > ${WORK_DIR}/reboot_OS_label
   
   # for more precision forbid fsck and NetworkManager\-wait\-online services
-  systemctl list-units --full | grep -E "*NetworkManager\-wait\-online*" | cut -d " " -f 1 >  ${WORK_DIR}/masked_services
-  cp $ROOTDIR/etc/fstab ${WORK_DIR}/my_fstab
-
-  #TODO: rewrite to "manual" mask - for next OS -- check functionality -- in case that $ROOTDIR is set: masked_services from systemctl it's not always right solution
-  for item in $(cat ${WORK_DIR}/masked_services); do 
-    systemctl mask $item;
-    ln -s /dev/null $ROOTDIR/etc/systemd/system/$item
+  #systemctl list-units --full | grep -E "*NetworkManager\-wait\-online*" | cut -d " " -f 1 >  ${WORK_DIR}/masked_services
+  for item in $mask_list; do
+    systemctl --root="/$ROOTDIR" mask $item && echo $item >> ${WORK_DIR}/masked_services
   done
+
+  if [[ ! -e ${WORK_DIR}/my_fstab ]]; then
+    cp $ROOTDIR/etc/fstab ${WORK_DIR}/my_fstab
+  fi
+
   cat ${WORK_DIR}/my_fstab | sed -r "s/\s*#.*$//g" | sed -r "s/[0-9]+$/0/g" > $ROOTDIR/etc/fstab
 
   if [[ ! -e $TEST_SERVICE_PATH ]]; then
@@ -137,24 +675,50 @@ if [[ $FLAG_NEW == true ]]; then
             "[Install]\nWanted=default.target\n" \
             > $TEST_SERVICE_PATH
   fi
-elif [ -f ${WORK_DIR}/step ]; then
+  
+  if [[ $DRACUT_FLAG -eq 1 && $REBOOT_OS != ""   ]]; then
+    echo $DRACUT_FS_LABEL > $WORK_DIR/dracut_fs_label
+    echo "-1" > $WORK_DIR/step
+    grub2-reboot "$REBOOT_OS";
+    if [[ $REBOOT_ENABLED -eq 1 ]]; then
+      reboot
+    else
+      echo "You set parameter '--no-reboot'. Test begin after you"
+      echo "reboot manually. Please remember that some critical changes"
+      echo "have been made! (e.g. in fstab, systemctl). Restore option is not"
+      echo "implemented yet."
+      exit 0
+    fi
+  fi
+
+elif [[ -f ${WORK_DIR}/step ]]; then
+  load_main_recipe
   STEP=$(cat ${WORK_DIR}/step)
   if [ $STEP -gt $END_TEST ]; then
     # testing ended
-    echo "Testing already ended. For new testing try \"systemd-pfmnc-test.sh new-test\""
-    exit
+    echo "Testing already ended. For new testing try \"systemd-pfmnc-test new-test\""
+    exit 0
   fi
   REBOOT_OS=$(cat ${WORK_DIR}/reboot_OS_label)
 else
   echo "Nothing to do. For new testing run \"systemd-pfmnc-test.sh new-test\""
-  exit
+  exit 0
 fi
 
+# dracut section
+if [[ -f $WORK_DIR/dracut_fs_label ]]; then
+  DRACUT_FS_LABEL=$( cat $WORK_DIR/dracut_fs_label )
+  rm -f $WORK_DIR/dracut_fs_label
+  
+  # we can't reboot again or exit directly! we want
+  # clean and set everything to previous state
+  use_dracut || STEP=$END_TEST
+  LOG_ENABLED=0
+fi
 
 # save logs
-if [ $LOG_ENABLED -eq 1 ]; then
+if [[ $LOG_ENABLED -eq 1 ]]; then
  LOG_DIR=$WORK_DIR/last
- # LOG_DIR=`ls -d --sort=time $WORK_DIR/2* | head -1`
 
   # sometimes bootup is not yet finished
   COUNTER=50 
@@ -172,16 +736,18 @@ if [ $LOG_ENABLED -eq 1 ]; then
 fi
 
 #prepare next test
-STEP=$[ $STEP+1 ]
+load_next_recipe
 echo $STEP > ${WORK_DIR}/step
 
 # clean journal
 #TODO: add option for storing of journal before removing
+##     free space and size must be checked / limited
 rm -rf $JOURNAL_DIR/*
 
-if [ $STEP -lt $END_TEST ]; then
- rm -f $DEF_PATH 
- ln -s $ROOTDIR/lib/systemd/system/test_${STEP}.target $DEF_PATH
+if [[ $STEP -lt $END_TEST ]]; then
+ prepare_test
+ rm -f $ROOTDIR/$DEF_PATH
+ chroot "/$ROOTDIR" ln -s /lib/systemd/system/test_pfmnc.target $DEF_PATH
  if [[ $REBOOT_OS != ""  ]]; then grub2-reboot "$REBOOT_OS"; fi
  if [[ $REBOOT_ENABLED -eq 1 ]]; then
    reboot
@@ -191,14 +757,17 @@ if [ $STEP -lt $END_TEST ]; then
    echo "have been made! (e.g. in fstab, systemctl). Restore option is not"
    echo "implemented yet."
  fi
-elif [ $STEP -eq $END_TEST ]; then
-  rm -f $DEF_PATH
-  ln -s $ROOTDIR/usr/lib/systemd/system/graphical.target $DEF_PATH
+elif [[ $STEP -eq $END_TEST && $LAST_DEFAULT -eq 1 ]]; then
+  rm -f $ROOTDIR/$DEF_PATH
+  ln -s /usr/lib/systemd/system/graphical.target $ROOTDIR/$DEF_PATH
   if [[ $REBOOT_OS != ""  ]]; then grub2-reboot "$REBOOT_OS"; fi
   reboot
 else
   # creat summary files and graphs
-  $BDIR/systemd-pfmnc-graph.py -i $WORK_DIR -o $WORK_DIR
+  $BDIR/systemd-pfmnc-graph.py -i $RESULT_DIR -o $WORK_DIR
+
+  rm -f $DEF_PATH
+  ln -s /usr/lib/systemd/system/graphical.target $DEF_PATH
 
   # finish clean after test
   mv -f ${WORK_DIR}/my_fstab $ROOTDIR/etc/fstab

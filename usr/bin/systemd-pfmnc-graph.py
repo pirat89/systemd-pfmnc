@@ -13,19 +13,22 @@ def getparams():
     """ Get and parse commandline parameters. """
     parser = argparse.ArgumentParser(
         prog="systemd-pfmnc-graph.py",
-        description="Script create summary files from logs of tests of systestemd and graphs with gnuplot.")
+        description="""Script create summary files from logs of tests
+                     of systestemd and graphs with gnuplot.""")
     parser.add_argument("-o","--output-dir", nargs=1,metavar="DIR",
         dest="output_dir", default=BASIC_DIR,
         help="path to output directory")
     parser.add_argument("-i","--input-dir", nargs=1,metavar="DIR",
         dest="input_dir", default=BASIC_DIR,
-        help="path to basic directory of systemd tests directory (default: "+BASIC_DIR+")")
+        help="""path to basic directory of systemd tests directory
+              (default: """+BASIC_DIR+")")
     parser.add_argument("-l","--last", nargs=1,metavar="N", 
-        dest="max_count", default=0, 
+        dest="max_count", default=0,
         help="Plot last N tests (systemd versions). Default 0 (all).")
     parser.add_argument("--ignore-version", 
         dest="ignore_version", action="store_true", default=False,
-        help="If exists more tests for one version of systemd, print them all. Default print only last.")
+        help="""If exists more tests for one version of systemd, 
+              print them all. Default print only last.""")
     parser.add_argument("--graph-size", nargs=1,metavar="WIDTHxHEIGHT",
         dest="dimensions", default="800x600",
         help="dimensions of output graph - e.g. 1024x768 (default 800x600")
@@ -34,10 +37,20 @@ def getparams():
         help="Create only summary files without graphs.")
     parser.add_argument("--average", dest="average_enabled", 
         action="store_true", default=False,
-        help="calculate harmonic average for same tests of same versions of systemd")
-    #parser.add_argument("", nargs="?",metavar="DIR", dest="", help="")
+        help="""calculate harmonic average for same tests of same versions
+                of systemd""")
+    parser.add_argument("--one-in", nargs=1, metavar="N", dest="one_in",
+        default=1, help="Print every N test (or version/commit).")
 
-    return parser.parse_args()
+    params = parser.parse_args()
+    params.max_count = get_int(params.max_count)
+    params.one_in = get_int(params.one_in)
+    return params
+
+def get_int(tmp):
+    if (isinstance(tmp, list)):
+        return tmp[0]
+    return tmp
 
 def get_string(tmp_var):
     if( isinstance(tmp_var, list)):
@@ -164,6 +177,18 @@ def calc_harmony_average(sumdict):
         sumdict[version] = { 0 : tmpList }
     return sumdict
 
+def is_one_in(one_in):
+    if(one_in < 1): # ignore non-sense values and se default
+        one_in = 1
+    counter = one_in;
+    while(True):
+        if(counter == one_in):
+            counter = 0
+            yield True
+        else:
+            yield False
+        counter += 1
+
 def complete_summary_dict(sumdict):
     """ Add missing tests into the summary dict with default zero time values
         and replace "None" tests too. """
@@ -191,17 +216,28 @@ def create_summary_dict(basic_dir,params):
         """
     if(basic_dir[-1] != '/'):
         basic_dir += '/'
+
     counter=params.max_count
+    counter_one_in = 0
+    versionlist= []
     sumdict={}
     for test_dir in timesortedls(basic_dir, True):
         if(path.isdir(basic_dir+test_dir) == False or
             re.match(".+_[0-9]+",test_dir) == None): ### here TODOOOO commits...
             continue
         version,numero = test_dir.split("_")
-        if(sumdict.has_key(version) == False):
-            sumdict[version] = { int(numero): create_testlist(basic_dir+test_dir) }
+        #if(sumdict.has_key(version) == False):
+        if((version in versionlist) == False):
+            versionlist.insert(0,version)
+            if(is_one_in(params.max_count) == True):
+                sumdict[version] = { int(numero): create_testlist(basic_dir+test_dir) }
+            else:
+                continue
         elif(params.ignore_version == True):
-            sumdict[version] [int(numero)] = create_testlist(basic_dir+test_dir)
+            if(is_one_in(params.max_count) == True): # must be here! not in prev condintion
+                sumdict[version] [int(numero)] = create_testlist(basic_dir+test_dir)
+            else:
+                continue
         elif(params.average_enabled == True):
             sumdict[version] [int(numero)] = create_testlist(basic_dir+test_dir)
             continue
