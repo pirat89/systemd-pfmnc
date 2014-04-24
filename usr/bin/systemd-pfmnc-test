@@ -217,6 +217,8 @@ conf_parser() {
 
   while read line; do
     if [[ $line == "" ]]; then continue; fi
+    check_match_str "^\s*#.*" $line  && continue
+
     tmp=$( echo $line | grep -oE "^\s*\[(MAIN|TEST_[0-9]+|OUTPUT)\]" | sed "s/[][ ]//g" )
 
     if [[ $tmp != "" ]]; then
