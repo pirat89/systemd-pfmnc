@@ -17,9 +17,9 @@ remote_user="pepek"
 RECV_RESULT_DIR="/home/fedora" # .. it's better that machine can write to noncritical place
 
 #IP="10.3.11.133"
-IP="172.16.95.3"
+IP="192.168.20.20"
 PORT="4501"
-HOST_IP="10.34.4.127"
+HOST_IP="192.168.20.30"
 HOST_PORT="4500"
 
 ################# FUNCTIONS #############################
