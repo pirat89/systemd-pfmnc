@@ -53,6 +53,7 @@ def get_params():
         help="""created graphs contains values from column kernel, initrd,
               userspace or their sum (total). This affects only sets of more
               then one test type (e.g. "1,2"). Alone graph contain all information. 
+              Options: "kernel", "initrd", "userspace", "total".
               Default: 'total'""")
     parser.add_argument("-c","--collections", nargs=1, metavar="RECIPE",
         dest="collections", default="A",
@@ -71,6 +72,7 @@ def get_params():
     params.max_count = get_int(params.max_count)
     params.one_in = get_int(params.one_in)
     params.collections = get_string(params.collections)
+    params.type = get_string(params.type)
     
     if(re.match("^(((([0-9],)*[0-9])*( |$))*|((A|X)( |$)))*$", 
                 params.collections) == None):
@@ -304,10 +306,9 @@ def create_summary_dict(basic_dir,params):
 
 
 #####################################################################
-def create_graph(data_file,output_file,y_col,dimensions="800,600"):
+def create_graph_single_test(data_file,output_file,dimensions="800,600"):
     """ Create graph in SVG format from values in data_file. Ouput store 
         into the output_file."""
-    y_col = str(y_col)
 
     gpcomlist = [
         "set style data linespoint",
@@ -316,13 +317,20 @@ def create_graph(data_file,output_file,y_col,dimensions="800,600"):
         "set xtic rotate by 45 right",
         "set style fill solid",
         "set xrange [] reverse",
-        "plot \""+ data_file +"\" u "+ y_col +":xticlabels(1) notitle",
+        "plot \""+ data_file +"\" u 5:xticlabels(1) notitle",
         "set offset 0.5,0.5,GPVAL_Y_MAX/100*10,0",
         "set terminal svg size "+ dimensions +" dynamic background rgb \"#ffffff\"",
-        "set output \""+ output_file +"\"",
-        "plot \""+ data_file +"\" u "+ y_col +":xticlabels(1) notitle, \""+ data_file +"\" u ($0):"+ y_col +":(sprintf(\"%.2f\",$"+ y_col +")) with labels offset -0.5,1 notitle",
-        "set output"
+        "set output \""+ output_file +"\""
         ]
+
+    plot_str="plot \""+ data_file +"\" u 2:xticlabels(1) title \"kernel\""#, \""+ data_file +"\" u ($0):2:(sprintf(\"%.2f\",$2)) with labels offset -0.5,1 notitle"
+    plot_str +=", \""+ data_file +"\" u 3:xticlabels(1) title \"initrd\", \""+ data_file +"\" u ($0):3:(sprintf(\"%.2f\",$3)) with labels offset -0.5,1 notitle"
+    plot_str +=", \""+ data_file +"\" u 4:xticlabels(1) title \"userspace\"" #, \""+ data_file +"\" u ($0):4:(sprintf(\"%.2f\",$4)) with labels offset -0.5,1 notitle"
+    plot_str +=", \""+ data_file +"\" u 5:xticlabels(1) title \"total\", \""+ data_file +"\" u ($0):5:(sprintf(\"%.2f\",$5)) with labels offset -0.5,1 notitle"
+
+    gpcomlist.append(plot_str)
+    gpcomlist.append("set output") # flush hack
+
     call(["gnuplot","-e",";".join(gpcomlist)])
 
 #####################################################################
@@ -369,7 +377,7 @@ def create_graph_tests(data_dir,output_file,y_col,items,dimensions="800,600"):
 def save_summary(sumdict,params):
     """ Create summary files for each type of test (0,1,2,..)"""
     head = "sd[_series]  kernel  initrd  userspace   total [sec]\n"
-    line_format = "{:<14s}  {:7.3f} {:8.3f} {:11.3f}  {:8.3f}"
+    line_format = "{:<9s} {:8.3f} {:8.3f} {:10.3f}  {:10.3f}"
     df_list=[]
 
     # open all resume files and print header
@@ -402,19 +410,19 @@ def save_summary(sumdict,params):
 def print_graphs(params, count_items, count_tests):
     """Parse recipes for print of graphs  """
 
-    def calc_dimensions(dimensions):
+    def calc_dimensions(dimensions, space):
         if(re.match("[0-9]+x[0-9]+", dimensions)):
             dimensions = map(lambda x: int(x), dimensions.split("x"))
         else:
             dimensions = [800,600]
-        if(params.auto_flag == True and dimensions[0] / count_items < 20):
-            dimensions[0] = count_items * 20
+        if(params.auto_flag == True and dimensions[0] / count_items < space):
+            dimensions[0] = count_items * space
             if(dimensions[0] > 4096):
                 dimensions[0] = 4096
         return ",".join(map(lambda x: str(x),dimensions))
 
 
-    choices={'kernel': 1, 'initrd': 2, 'userspace': 3, 'total': 4}
+    choices={'kernel': 2, 'initrd': 3, 'userspace': 4, 'total': 5}
     collections = [list(set(i.split(","))) for i in params.collections.split(" ")]
 
     if(["X"] in collections):
@@ -437,13 +445,17 @@ def print_graphs(params, count_items, count_tests):
         str(_max)+"' which not exists!\n")
         exit(3)
 
-    dim_str = calc_dimensions(params.dimensions)
-
     for item in collections:
         label = "-".join(map(lambda x: str(x), item))
-        create_graph_tests(params.output_dir, 
+        if(len(item) == 1):
+            create_graph_single_test(path.join(params.output_dir,"test_"+str(item[0])+".summary"),
                            path.join(params.output_dir,"graph_"+label+".svg"),
-                           4,item,dim_str)
+                           calc_dimensions(params.dimensions, 30))
+        else:
+            create_graph_tests(params.output_dir, 
+                           path.join(params.output_dir,"graph_"+label+".svg"),
+                           choices[params.type],
+                           item, calc_dimensions(params.dimensions, 20))
 
 #####################################################################
 ######################### ===== MAIN ==== ###########################

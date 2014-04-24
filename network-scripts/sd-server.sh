@@ -1,23 +1,25 @@
 #!/bin/bash
 
-WORK_DIR="/home/pirat/Dokumenty"
+WORK_DIR="/var/log/sd-test"
 SD_GIT_DIR="$WORK_DIR/systemd"
 SD_GIT_REPO="git://anongit.freedesktop.org/systemd/systemd"
 RESULT_DIR="$WORK_DIR/results"
 BACKUP_PWD=$PWD
 PATCH_ENABLED=0
+REPEATED_FOR_COMIPLATION=0
 
 git_test_branch="pfmnc"
-test_script="/home/pirat/sd-pfmnc-server.py"
+test_script="/usr/bin/sd-pfmnc-server.py"
 test_commit=""
 test_file="test.tar.xz"
 recv_file="recv_result.tar.xz"
 remote_user="pepek"
-RECV_RESULT_DIR="/home/pepek" # .. it's better that machine can write to noncritical place
+RECV_RESULT_DIR="/home/fedora" # .. it's better that machine can write to noncritical place
 
-IP="192.168.20.3"
+#IP="10.3.11.133"
+IP="172.16.95.3"
 PORT="4501"
-HOST_IP="192.168.20.2"
+HOST_IP="10.34.4.127"
 HOST_PORT="4500"
 
 ################# FUNCTIONS #############################
@@ -66,7 +68,7 @@ is_test_prepared() {
     git checkout $git_test_branch
 
     cd $WORK_DIR
-    tar -Jcf $WORK_DIR/$test_file ${SD_GIT_DIR#$WORK_DIR/}
+    tar --posix -Jcf $WORK_DIR/$test_file ${SD_GIT_DIR#$WORK_DIR/}
 
     cd $SD_GIT_DIR
     test_commit=$(git show | head -n 1 | cut -d " " -f 2)
@@ -91,7 +93,7 @@ is_test_prepared() {
   git checkout master
 
   cd $WORK_DIR
-  tar -Jcf $test_file sd_test.patch
+  tar --posix -Jcf $test_file sd_test.patch
   rm -f $WORK_DIR/sd_test.patch
   
   cd $BACKUP_PWD
@@ -153,15 +155,26 @@ while [[ 1 ]]; do # run forever and ever - if you crashed down, I killed you...I
     done
     echo "mam $status"
 
+    if [[ $status -eq 9 && $REPEATED_FOR_COMPILATION -eq 0 ]]; then
+      # failed on compilation - maybe error on make clean etc.
+      # send complete source code
+      PATCH_ENABLED=0
+      REPEATED_FOR_COMPILATION=1
+      rm -f $RECV_RESULT_DIR/$recv_file
+      continue # if it is not permanent error, do not store results
+    fi
+
+    REPEATED_FOR_COMPILATION=0
+
     tar -Jxf $RECV_RESULT_DIR/$recv_file -C $RECV_RESULT_DIR
     origin_label=$( tar -tf $RECV_RESULT_DIR/$recv_file | head -n 1 )
     if [[ $origin_label == ""  ]]; then continue; fi # hypotetic situation
     #  mkdir -p $RESULT_DIR/$origin_label # only if new hiearchy
     test_commit_edited=$(echo $test_commit | sed -r "s/^(......).*$/\1/")
-    mv $RECV_RESULT_DIR/$origin_label  $RESULT_DIR/$test_commit_edited # think up hiearchy again...
-    rm -rf $RECV_RESULT_DIR/$recv_file
+    mv $RECV_RESULT_DIR/$origin_label  $RESULT_DIR/${test_commit_edited}_0 # think up hiearchy again...
+    rm -f $RECV_RESULT_DIR/$recv_file
 
-    systemd-pfmnc-graph.py -i $RESULT_DIR -o $RESULT_DIR
+    systemd-pfmnc-graph.py -i $RESULT_DIR -o $RESULT_DIR -l 30 --auto-width -t total -c "A X"
     
   else
     echo "nothing for testing"
