@@ -260,10 +260,11 @@ def complete_summary_dict(sumdict):
 
 #####################################################################
 def create_summary_dict(basic_dir,params):
-    """ Create and return summary dict. Summary dict (sumdict) has ugly 
+    """ Create and return tuple (summary dict, versionList). Summary dict (sumdict) has ugly 
         structure:
         { sd_version : {series : [type_of_test { part_times }]}}
            commit ...
+        versionList is important - contains information about reversed order!
         """
     if(basic_dir[-1] != '/'):
         basic_dir += '/'
@@ -302,7 +303,7 @@ def create_summary_dict(basic_dir,params):
     sumdict = complete_summary_dict(sumdict)
     if(params.average_enabled == True):
         sumdict = calc_harmony_average(sumdict)
-    return sumdict
+    return (sumdict, versionList)
 
 
 #####################################################################
@@ -374,21 +375,23 @@ def create_graph_tests(data_dir,output_file,y_col,items,dimensions="800,600"):
     call(["gnuplot","-e",";".join(gpcomlist)])
 
 #####################################################################
-def save_summary(sumdict,params):
+def save_summary(sumtuple,params, max_test):
     """ Create summary files for each type of test (0,1,2,..)"""
     head = "sd[_series]  kernel  initrd  userspace   total [sec]\n"
     line_format = "{:<9s} {:8.3f} {:8.3f} {:10.3f}  {:10.3f}"
     df_list=[]
+    sumdict = sumtuple[0]
+    versionList = sumtuple[1]
 
     # open all resume files and print header
-    for i in range(max_test+1):
+    for i in range(max_test):
         handle = open(path.join(params.output_dir,"test_"+str(i)+".summary"), "w")
         handle.write(head)
         df_list.append(handle)
 
     # body
     # go through whole structure and print
-    for sdv in sorted(sumdict.keys(), reverse=True):
+    for sdv in versionList:
         sd_dict = sumdict[sdv]
         for series in sorted(sd_dict.keys(), reverse=True):
             test_list = sd_dict[series]
@@ -470,9 +473,9 @@ if(check_dir(params.output_dir, W_OK) == False or
 if(check_dir(params.input_dir, R_OK) == False):
     exit(2)
 
-sumdict = create_summary_dict(params.input_dir, params)
-save_summary(sumdict,params)
+sumtuple = create_summary_dict(params.input_dir, params)
+save_summary(sumtuple,params,max_test+1)
 
 if(params.graph_enabled == True):
-    print_graphs(params, len(sumdict), max_test+1)
+    print_graphs(params, len(sumtuple[0]), max_test+1)
 
