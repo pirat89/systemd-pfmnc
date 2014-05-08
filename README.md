@@ -1,1 +1,1 @@
-- network branch is more actual - I will push all updates for all scripts later
+- completed some usable version
