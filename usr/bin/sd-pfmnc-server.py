@@ -54,6 +54,7 @@ Possible are 2 modes:
         File is tar archive!
         Return values:
             0      - success and passed tests
+            1      - some unexpected error
             2      - wrong commandline parameters
             4      - communication failure
             5      - result code is nonsense! probably commmunication error
@@ -130,9 +131,12 @@ def rq_test(src_file, conn,ssh_login, patch_flag):
             print(data)
             s.close()
             return 7
-    except ValueError:
+    except OSError:
         s.close()
         return 4
+    except Exception:
+        s.close()
+        return 1
 
     s.close()
     return 0
@@ -144,14 +148,18 @@ def recv_result(o_file, conn):
     try:
         ss = socket.socket(AF_INET, SOCK_STREAM)
         ss.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+    except Exception:
+        return 1
+    try:
         ss.bind(tuple(conn))
         ss.listen(1)
-    except ValueError:
+    except OSError:
         ss.close()
         return 4
 
     try:
         s, addr = ss.accept()
+        ss.close()
         data = s.recv(10).decode()
         if(data[0:3] == "ACK"):
             tcode = int(data[4:])
@@ -168,11 +176,14 @@ def recv_result(o_file, conn):
     except ValueError:
         s.close()
         return 5
-    except ValueError:
+    except OSError:
         ss.close()
         s.close()
         return 4 # communication failure
-    ss.close()
+    except Exception:
+        ss.close()
+        s.close()
+        return 1
     s.close()
     return 6
 

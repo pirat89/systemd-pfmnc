@@ -50,10 +50,19 @@ basic_init() {
     git config user.name "test server"
     git config user.mail "test@test.com"
     git branch $git_test_branch
-  else # download only new commits in master branch
+  else # download new commits in master branch
     cd $SD_GIT_DIR
-    git checkout master #default is master, however certainty  is machine-gun
+    # check if last tested commit has own directory (== test finished)
+    # if has not then reset test branch (pfmnc probably) to this commit
+    last_commit_dir=$(git cherry $git_test_branch master | grep -B 1 -m 1 "^+" | head -n 1 | sed -E "s/^..(......).*/\1_0/")
+    if [[ -e $RESULT_DIR/$last_commit_dir ]]; then
+      git checkout $git_test_branch
+      git reset --hard HEAD^
+      PATCH_ENABLED=0
+    fi
+    git checkout master
     git pull
+    
     cd -
   fi
   cd $BACKUP_PWD
@@ -79,6 +88,7 @@ is_test_prepared() {
   fi
 
   cd $SD_GIT_DIR
+  git pull # update local master branch
   git checkout $git_test_branch
   test_commit=$(git cherry $git_test_branch master | grep -m 1 "^\+")
   test_commit=${test_commit#"+ "} # remove prefix
@@ -138,13 +148,15 @@ while [[ 1 ]]; do # run forever and ever - if you crashed down, I killed you...I
   is_test_prepared
   if [[ $? -eq 0 ]];then
     #TODO: check better and give echo on BIG problem
-    echo "posilam"
+    echo "Sendings"
+    sleep_time=0
     send_test_rq
     while [[ $? -ne 0 ]]; do
-      sleep 10
+      sleep $sleep_time
+      [[ $sleep_time -lt 600 ]] && sleep_time=$[ $sleep_time + 60 ]
       send_test_rq
     done
-    echo "odeslano $status"
+    echo "Sended: $status"
 
     recv_result
     status=$?
@@ -153,7 +165,7 @@ while [[ 1 ]]; do # run forever and ever - if you crashed down, I killed you...I
       status=$?
       sleep 1
     done
-    echo "mam $status"
+    echo "Recieved: $status"
 
     if [[ $status -eq 9 && $REPEATED_FOR_COMPILATION -eq 0 ]]; then
       # failed on compilation - maybe error on make clean etc.
@@ -177,8 +189,8 @@ while [[ 1 ]]; do # run forever and ever - if you crashed down, I killed you...I
     systemd-pfmnc-graph.py -i $RESULT_DIR -o $RESULT_DIR -l 30 --auto-width -t total -c "A X"
     
   else
-    echo "nothing for testing"
-    sleep 60 # good interval for me
+    echo "Nothing for testing."
+    sleep 600 # good interval for me
   fi
 done
 
